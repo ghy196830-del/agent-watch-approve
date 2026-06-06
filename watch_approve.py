@@ -70,8 +70,9 @@ if TIMEOUT_DECISION not in ("allow", "deny", "ask"):
 DYNAMIC_ACTIONS = os.environ.get("PUSHCUT_DYNAMIC_ACTIONS", "1").strip() != "0"
 
 # Which Pushcut devices to target (names from GET /v1/devices), comma-separated.
-# Empty = Pushcut default (all devices). Note: on iOS the Apple Watch only shows a
-# notification when the iPhone is locked; targeting a device does not override that.
+# Empty = Pushcut default (all devices). Targeting the watch by name does NOT by itself
+# beat Apple's routing (a normal alert still stays on the iPhone while it's in use) — the
+# real lever for reliable watch delivery is PUSHCUT_TIME_SENSITIVE below.
 PUSHCUT_DEVICES = [
     d.strip() for d in os.environ.get("PUSHCUT_DEVICES", "").split(",") if d.strip()
 ]
@@ -81,6 +82,12 @@ PUSHCUT_DEVICES = [
 # "vibrateOnly" to buzz without sound, "none" to send no sound. Other values per
 # Pushcut: system / subtle / question / jobDone / problem / loud ...
 PUSHCUT_SOUND = os.environ.get("PUSHCUT_SOUND", "default").strip()
+
+# Mark the notification as Time-Sensitive. This is the single most effective lever to get
+# it onto the Apple Watch even when the iPhone is unlocked/in use — a normal alert otherwise
+# stays on the phone (Apple's routing). Time-Sensitive also breaks through Focus / Do Not
+# Disturb. Default on; set PUSHCUT_TIME_SENSITIVE=0 to disable.
+TIME_SENSITIVE = os.environ.get("PUSHCUT_TIME_SENSITIVE", "1").strip() != "0"
 
 # Retries for triggering the Pushcut notification. Some networks/proxies occasionally
 # drop the TLS handshake to api.pushcut.io (SSLEOFError); a few retries fix it (a
@@ -259,6 +266,8 @@ def send_pushcut(opener, title, text):
         payload["devices"] = PUSHCUT_DEVICES
     if PUSHCUT_SOUND and PUSHCUT_SOUND.lower() != "none":
         payload["sound"] = PUSHCUT_SOUND
+    if TIME_SENSITIVE:
+        payload["isTimeSensitive"] = True
     body = json.dumps(payload).encode("utf-8")
 
     last = None

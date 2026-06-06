@@ -11,7 +11,7 @@ your wrist, and the decision flows back to gate the action — no need to look a
 ```
 PreToolUse hook
   → POST a notification to Pushcut (with Allow/Deny background-request buttons)
-  → iPhone (locked) mirrors it to the Apple Watch; you tap Allow / Deny
+  → it's sent Time-Sensitive, so it reaches the Apple Watch even while the iPhone is in use; you tap Allow / Deny
   → Pushcut runs the button's background web request → publishes allow/deny to an ntfy topic
   → the hook reads the result from the ntfy stream
   → returns permissionDecision (allow / deny / ask) to the agent
@@ -87,7 +87,7 @@ once for a one-off).
 echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hello"}}' \
   | python /path/to/watch_approve.py
 ```
-Lock your iPhone so the notification reaches the watch, tap **Allow**, and you should immediately get:
+Tap **Allow** (the alert is Time-Sensitive by default, so it reaches the watch even if the iPhone is unlocked), and you should immediately get:
 ```json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"watch-approve: approved on watch."}}
 ```
@@ -103,6 +103,7 @@ Lock your iPhone so the notification reaches the watch, tap **Allow**, and you s
 | `PUSHCUT_NOTIF` | `claude` | Name of the Pushcut notification to trigger. |
 | `HTTPS_PROXY` | — | Proxy for all outbound requests, e.g. `http://127.0.0.1:7890`. Falls back to `HTTP_PROXY`. |
 | `PUSHCUT_SOUND` | `default` | Notification sound. **Without one the watch won't vibrate.** `vibrateOnly` = buzz, no sound; `none` = silent. |
+| `PUSHCUT_TIME_SENSITIVE` | `1` | `1` = mark the alert **Time-Sensitive** → reaches the **Apple Watch even while the iPhone is in use**, and breaks through Focus/DND. `0` = normal alert (watch only when the phone is locked). |
 | `WATCH_AGENT_LABEL` | `Agent` | Title prefix, e.g. `Claude` → "Claude: Bash". |
 | `APPROVE_WAIT` | `240` | Seconds to wait for the reply. Keep it **below** the hook `timeout` (300). |
 | `APPROVE_TIMEOUT_DECISION` | `ask` | Decision if nobody replies in time: `ask` / `allow` / `deny`. |
@@ -124,7 +125,9 @@ By default the hook asks for approval on **every** tool call matched by `matcher
 Set `WATCH_DANGER_ONLY=1` and the hook only pings your watch for **risky** commands (the rest return
 `ask` immediately, so the agent behaves normally and your watch stays quiet).
 
-Recommended low-noise setup: `WATCH_DANGER_ONLY=1` plus a narrow `"matcher": "Bash"`.
+Recommended low-noise setup: `WATCH_DANGER_ONLY=1` plus a narrow `"matcher": "Bash"`. (A narrow matcher
+stays quiet, but tools it doesn't list fall back to the terminal — see **Auto-pilot** below for a fully
+terminal-free variant.)
 
 The built-in danger list flags things like `rm -rf`, `sudo`, `git push --force`, `git reset --hard`,
 `dd`, `mkfs`, `chmod 777`, `shutdown`/`reboot`, `kill`, `drop/truncate table`, `delete from`,
@@ -136,20 +139,32 @@ The built-in danger list flags things like `rm -rf`, `sudo`, `git push --force`,
 
 **Auto-pilot with a safety net.** By default, danger-only sends non-risky ops to `ask` (so the terminal
 may still prompt). If you'd rather *never* touch the terminal — "only risky ops gate on my watch,
-everything else just runs" — combine `WATCH_DANGER_ONLY=1` with `WATCH_NONDANGER_DECISION=allow`. Then
-non-risky operations are auto-approved silently and only danger-list matches buzz your watch.
+everything else just runs" — combine **`"matcher": "*"`** with `WATCH_DANGER_ONLY=1` and
+`WATCH_NONDANGER_DECISION=allow`. Then *every* tool routes through the hook: non-risky ones (reads, web
+search, MCP calls, …) are auto-approved silently, and only danger-list matches buzz your watch.
 
-> ⚠️ With `WATCH_NONDANGER_DECISION=allow`, anything the danger list does **not** catch runs without any
+> **Why `"matcher": "*"` and not a narrow one?** A matcher is a whitelist — any tool it *doesn't* list
+> (`WebSearch`, MCP tools, tomorrow's new tool, …) skips the hook entirely and falls back to the agent's
+> **in-terminal** prompt, which never reaches your watch or phone. A whitelist always misses the next new
+> tool, so for a no-terminal setup, match **all** tools and let the danger filter decide. (Claude Code
+> docs: `"*"`, `""`, or an omitted matcher all mean "match every tool".)
+
+> ⚠️ Two things to keep in mind: (1) Only pair `"matcher": "*"` with `WATCH_DANGER_ONLY=1` — a `"*"`
+> matcher *without* danger-only would buzz your watch on **every** tool call (including every file read).
+> (2) With `WATCH_NONDANGER_DECISION=allow`, anything the danger list does **not** catch runs without any
 > confirmation. The danger regex is your only gate — review/extend it (`WATCH_DANGER_EXTRA`) to taste.
 
 ---
 
 ## Apple Watch notes (important)
 
-- **The watch only shows the notification when the iPhone is locked/asleep.** If the phone is
-  unlocked/in use, iOS keeps the alert on the phone. This is Apple's behavior, not a bug — and it fits
-  the use case (phone locked on the desk while you code → it goes to the watch; you're on your phone →
-  the phone shows it). Either way you're notified on the device you're using.
+- **Time-Sensitive is what gets it to the watch reliably.** By default a *normal* notification only
+  reaches the Apple Watch when the iPhone is **locked/asleep**; while the phone is unlocked/in use, iOS
+  keeps the alert on the phone (Apple's routing, not a bug). Marking it **Time-Sensitive**
+  (`PUSHCUT_TIME_SENSITIVE=1`, the default) breaks through that, so it reaches the watch **even while
+  you're using the iPhone** — and through Focus / Do Not Disturb. A/B-tested on-device: two
+  otherwise-identical notifications, only the Time-Sensitive one reached the watch while the phone was in
+  use. (Needs Time-Sensitive allowed for Pushcut under iOS Settings → Notifications — the default.)
 - **Install the Pushcut app on the watch.** Without it the watch can't act on the notification.
 - **Buttons must be background web requests** (this hook does that). watchOS rejects "open app / run
   shortcut" actions with *"actions that run shortcuts or open apps are not supported on watchOS"*.
@@ -170,7 +185,8 @@ Read `permissionDecisionReason` in the output — it says what happened:
 | `Pushcut returned HTTP 404` | No notification with that `PUSHCUT_NOTIF` name exists in Pushcut's cloud (create it, and make sure the app synced it). |
 | `Pushcut returned HTTP 401/403` | Wrong `PUSHCUT_KEY`. |
 | `failed to reach Pushcut (...)` | Proxy/network down, or repeated TLS failures (raise `PUSHCUT_RETRIES`). |
-| Phone buzzes, watch doesn't | iPhone wasn't locked, or Pushcut app not installed on the watch. |
+| Phone buzzes, watch doesn't | Keep `PUSHCUT_TIME_SENSITIVE=1` (default) so the alert is Time-Sensitive and reaches the watch while the phone is in use. Also check the Pushcut app is installed on the watch and that Time-Sensitive is allowed for Pushcut in iOS Settings → Notifications. |
+| Agent still prompts in the **terminal** (never reaches the watch/phone) | That tool isn't covered by your `matcher` (a whitelist) — e.g. `WebSearch` or MCP tools. Use `"matcher": "*"` together with `WATCH_DANGER_ONLY=1` + `WATCH_NONDANGER_DECISION=allow` so every tool routes through the hook. |
 | Watch shows it but tapping says "not supported" | The action isn't a background web request (default config already is). |
 | No vibration | Set `PUSHCUT_SOUND=default` (or `vibrateOnly`). |
 
