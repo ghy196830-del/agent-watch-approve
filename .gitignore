@@ -1,0 +1,20 @@
+# Never commit real secrets / local config
+*.local.json
+.env
+*.env
+secrets.*
+.claude/settings.json
+.codex/config.toml
+.codex/hooks.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

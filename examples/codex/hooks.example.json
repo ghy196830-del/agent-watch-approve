@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"/ABSOLUTE/PATH/TO/watch_approve.py\"",
+            "command_windows": "python \"C:\\\\ABSOLUTE\\\\PATH\\\\TO\\\\watch_approve.py\"",
+            "statusMessage": "Asking watch for approval",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

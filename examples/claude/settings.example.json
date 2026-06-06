@@ -1,0 +1,26 @@
+{
+  "env": {
+    "PUSHCUT_KEY": "REPLACE_WITH_YOUR_PUSHCUT_API_KEY",
+    "NTFY_TOPIC": "REPLACE_WITH_A_LONG_RANDOM_SECRET_TOPIC",
+    "PUSHCUT_NOTIF": "claude",
+    "PUSHCUT_SOUND": "default",
+    "WATCH_AGENT_LABEL": "Claude",
+    "APPROVE_WAIT": "240",
+    "APPROVE_TIMEOUT_DECISION": "ask",
+    "HTTPS_PROXY": ""
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"/ABSOLUTE/PATH/TO/watch_approve.py\"",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}
