@@ -146,6 +146,7 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command"
 - **按钮必须是后台 web 请求**(本 hook 已是)。否则 watchOS 报「actions that run shortcuts or open
   apps are not supported on watchOS」。
 - **要带声音**(`PUSHCUT_SOUND=default`),否则手表不震。
+- **某台设备突然收不到了,就在它上面重开 Pushcut app。** app 被杀 / 长时间后台后,推送 token 会失效;此时 Pushcut 仍一直返回「成功」,但什么都到不了。重开会重新注册 token(并让手表重新同步)。
 
 ## 延迟
 有几秒的物理地板:发通知要往返 Pushcut,回执要经 ntfy 往返,再加 Apple 推表的耗时。代理慢/不稳的话,
@@ -158,10 +159,12 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command"
 | `Pushcut returned HTTP 404` | Pushcut 云端没有这个 `PUSHCUT_NOTIF` 通知(去建,并确认 app 同步上去了)。 |
 | `Pushcut returned HTTP 401/403` | `PUSHCUT_KEY` 不对。 |
 | `failed to reach Pushcut (...)` | 代理/网络不通,或 TLS 反复失败(调大 `PUSHCUT_RETRIES`)。 |
+| hook 发送不报错,但**所有设备**都收不到 | Pushcut 接口已接收这条推送(返回成功),但 APNs 没投递——多半是**推送 token 失效**(Pushcut app 被系统杀掉 / 长时间后台)。**打开 iPhone 上的 Pushcut app** 重新注册 token(顺带让手表重新同步)。记住:Pushcut 返回「成功」只代表云端**接收**了,不代表设备**收到**了。 |
 | 手机震、手表不震 | 保持 `PUSHCUT_TIME_SENSITIVE=1`(默认)让通知是「限时」的,手机在用时也能上手表;并确认手表装了 Pushcut app、iOS 设置 → 通知里允许 Pushcut 的限时通知。 |
 | agent 还是在**终端**弹确认(到不了手表/手机) | 那个工具不在你的 `matcher`(白名单)里——如 `WebSearch`、MCP 工具。用 `"matcher": "*"` 配 `WATCH_DANGER_ONLY=1` + `WATCH_NONDANGER_DECISION=allow`,让每个工具都过 hook。 |
 | 表上点了提示「not supported」 | 按钮不是后台 web 请求(默认配置已是)。 |
 | 不震动 | 设 `PUSHCUT_SOUND=default`(或 `vibrateOnly`)。 |
+| 通知文字显示成 `???`(Windows 手动测试) | 是 PowerShell 的锅,不是 hook:用管道把非 ASCII 喂给原生程序时,`$OutputEncoding` 默认 ASCII,会把中文/emoji 压成 `?`。hook 本身读 UTF-8、发 `\uXXXX` 转义的 JSON,agent 实际运行时渲染正常。Windows 上测非 ASCII 时,改用 UTF-8 文件喂 JSON 或用环境变量传值,别用内联管道。 |
 
 任何失败都返回 `ask`,agent 退回正常弹窗,绝不卡死。
 

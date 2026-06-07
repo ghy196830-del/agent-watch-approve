@@ -169,6 +169,7 @@ search, MCP calls, …) are auto-approved silently, and only danger-list matches
 - **Buttons must be background web requests** (this hook does that). watchOS rejects "open app / run
   shortcut" actions with *"actions that run shortcuts or open apps are not supported on watchOS"*.
 - **Set a sound** (`PUSHCUT_SOUND=default`) or the watch won't vibrate.
+- **If a device suddenly stops receiving, reopen the Pushcut app on it.** The app's push token can go stale after it's been killed/backgrounded for a while — Pushcut keeps reporting "success" while nothing arrives. Reopening re-registers the token (and re-syncs the watch).
 
 ## Latency
 
@@ -185,10 +186,12 @@ Read `permissionDecisionReason` in the output — it says what happened:
 | `Pushcut returned HTTP 404` | No notification with that `PUSHCUT_NOTIF` name exists in Pushcut's cloud (create it, and make sure the app synced it). |
 | `Pushcut returned HTTP 401/403` | Wrong `PUSHCUT_KEY`. |
 | `failed to reach Pushcut (...)` | Proxy/network down, or repeated TLS failures (raise `PUSHCUT_RETRIES`). |
+| Hook sends with no error, but **no device** receives the notification | Pushcut's API accepted the push (returns success) but APNs didn't deliver it — most often a **stale push token** because the Pushcut app was killed / backgrounded too long. **Open the Pushcut app on the iPhone** to re-register its token (this also re-syncs the watch). Remember: a Pushcut "success" only means the cloud *accepted* the push, not that a device *received* it. |
 | Phone buzzes, watch doesn't | Keep `PUSHCUT_TIME_SENSITIVE=1` (default) so the alert is Time-Sensitive and reaches the watch while the phone is in use. Also check the Pushcut app is installed on the watch and that Time-Sensitive is allowed for Pushcut in iOS Settings → Notifications. |
 | Agent still prompts in the **terminal** (never reaches the watch/phone) | That tool isn't covered by your `matcher` (a whitelist) — e.g. `WebSearch` or MCP tools. Use `"matcher": "*"` together with `WATCH_DANGER_ONLY=1` + `WATCH_NONDANGER_DECISION=allow` so every tool routes through the hook. |
 | Watch shows it but tapping says "not supported" | The action isn't a background web request (default config already is). |
 | No vibration | Set `PUSHCUT_SOUND=default` (or `vibrateOnly`). |
+| Notification text shows as `???` (Windows manual test) | A PowerShell artifact, not the hook: piping non-ASCII into a native program re-encodes it as `?`, because `$OutputEncoding` defaults to ASCII. The hook itself reads UTF-8 and sends `\uXXXX`-escaped JSON, which renders correctly when the agent runs it. To test non-ASCII on Windows, feed the JSON from a UTF-8 file or via environment variables instead of an inline pipe. |
 
 Any failure path returns `ask`, so the agent just falls back to its normal prompt — it never hangs.
 
