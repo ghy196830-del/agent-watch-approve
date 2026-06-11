@@ -44,15 +44,12 @@ with ✅ Allow / ❌ Deny buttons, and pings you when each task finishes — no 
 
 ### 📸 Real-device photos
 
-<!-- Drop photos into assets/photos/ and uncomment:
 <div align="center">
-  <img src="./assets/photos/photo-1.jpg" width="260">
-  <img src="./assets/photos/photo-2.jpg" width="260">
-  <img src="./assets/photos/photo-3.jpg" width="260">
+  <img src="./assets/photos/photo-1.jpg" width="320" alt="Claude wants to delete a folder - approving on Apple Watch">
+  <img src="./assets/photos/photo-2.jpg" width="320" alt="Codex wants to git push - approving on Apple Watch">
+  <br>
+  <sub>Left: Claude asks to delete a folder · Right: Codex asks to git push — one watch handles both</sub>
 </div>
--->
-
-> 🚧 Real-device shots coming soon — enjoy the renders above meanwhile.
 
 ---
 

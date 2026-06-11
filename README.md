@@ -47,15 +47,12 @@
 
 ### 📸 真机实拍
 
-<!-- 把真机照片放进 assets/photos/ 后,取消下面的注释即可:
 <div align="center">
-  <img src="./assets/photos/photo-1.jpg" width="260">
-  <img src="./assets/photos/photo-2.jpg" width="260">
-  <img src="./assets/photos/photo-3.jpg" width="260">
+  <img src="./assets/photos/photo-1.jpg" width="320" alt="Claude 要删文件夹,Apple Watch 上点批准">
+  <img src="./assets/photos/photo-2.jpg" width="320" alt="Codex 要 git push,Apple Watch 上点批准">
+  <br>
+  <sub>左:Claude 要删文件夹,手表上批 · 右:Codex 要 git push,同一块表照单全收</sub>
 </div>
--->
-
-> 🚧 真机实拍图稍后补上,先看上面的效果图。
 
 ---
 
