@@ -31,7 +31,7 @@ with ✅ Allow / ❌ Deny buttons, and pings you when each task finishes — no 
   <sub>Risky action → watch buzzes → ✅ one tap, the agent keeps going</sub>
 </div>
 
-▶️ **[Full intro video (30s)](./assets/showcase/intro.mp4)** — plays right on GitHub
+▶️ **[Full intro video (30s)](https://cdn.jsdelivr.net/gh/ghy196830-del/agent-watch-approve@main/assets/showcase/intro.mp4)** — opens in your player (fallback: [repo file](./assets/showcase/intro.mp4))
 
 ### Feature gallery
 
@@ -45,9 +45,7 @@ with ✅ Allow / ❌ Deny buttons, and pings you when each task finishes — no 
 ### 📸 Real-device photos
 
 <div align="center">
-  <img src="./assets/photos/photo-1.jpg" width="260" alt="Claude wants to delete a folder - approving on Apple Watch">
-  <img src="./assets/photos/photo-2.jpg" width="260" alt="Codex wants to git push - approving on Apple Watch">
-  <img src="./assets/photos/photo-3.jpg" width="260" alt="Task complete notification on Apple Watch">
+  <img src="./assets/photos/real-shots.jpg" width="100%" alt="Real-device shots: Claude deletion approval / Codex git push approval / task-done notification">
   <br>
   <sub>Left: Claude asks to delete a folder · Middle: Codex asks to git push · Right: task done — a glance at the wrist is all it takes</sub>
 </div>

@@ -32,7 +32,7 @@
   <sub>危险操作 → 手表一震 → ✅ 点一下放行,agent 继续干活</sub>
 </div>
 
-▶️ **[完整介绍视频(30 秒)](./assets/showcase/intro.mp4)** —— 点开即播
+▶️ **[完整介绍视频(30 秒)](https://cdn.jsdelivr.net/gh/ghy196830-del/agent-watch-approve@main/assets/showcase/intro.mp4)** —— 点开即播(备用:[仓库内文件](./assets/showcase/intro.mp4))
 
 <!-- 📺 抖音/B站视频发布后,把链接贴在这里 -->
 
@@ -48,9 +48,7 @@
 ### 📸 真机实拍
 
 <div align="center">
-  <img src="./assets/photos/photo-1.jpg" width="260" alt="Claude 要删文件夹,Apple Watch 上点批准">
-  <img src="./assets/photos/photo-2.jpg" width="260" alt="Codex 要 git push,Apple Watch 上点批准">
-  <img src="./assets/photos/photo-3.jpg" width="260" alt="任务已完成,Apple Watch 通知">
+  <img src="./assets/photos/real-shots.jpg" width="100%" alt="真机实拍:Claude 删文件夹审批 / Codex git push 审批 / 任务完成通知">
   <br>
   <sub>左:Claude 要删文件夹,手表上批 · 中:Codex 要 git push,同一块表照单全收 · 右:跑完了,抬腕就知道</sub>
 </div>
