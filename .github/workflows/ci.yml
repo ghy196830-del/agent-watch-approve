@@ -5,12 +5,19 @@ on:
   pull_request:
 
 jobs:
-  syntax-check:
-    runs-on: ubuntu-latest
+  test:
+    # 跨三平台跑:本项目强依赖各平台 shell / 路径 / 编码行为
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-      - name: Byte-compile the hook (stdlib only, no deps)
+      - name: Byte-compile the hooks (stdlib only, no deps)
         run: python -m py_compile watch_approve.py watch_done.py
+      - name: Unit tests (no network)
+        run: python -m unittest discover -s tests -v

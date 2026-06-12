@@ -10,7 +10,7 @@
     "APPROVE_WAIT": "240",
     "APPROVE_TIMEOUT_DECISION": "ask",
     "WATCH_DANGER_ONLY": "1",
-    "WATCH_NONDANGER_DECISION": "allow",
+    "WATCH_NONDANGER_DECISION": "ask",
     "WATCH_PROTECT_PATHS": "watch-hooks"
   },
   "hooks": {

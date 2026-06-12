@@ -52,9 +52,19 @@ with ✅ Allow / ❌ Deny buttons, and pings you when each task finishes — no 
 
 ---
 
+## 🚀 Fastest path to success (5 steps)
+
+1. **Install [Pushcut](https://www.pushcut.io/)** (iPhone + Apple Watch), create a Notification in the app (any name), grab the API key from Account → API;
+2. **Pick a long random [ntfy](https://ntfy.sh/) topic** (no signup; the name is the password, e.g. `myagent_8f3k2j9x`);
+3. **Drop the scripts** — `watch_approve.py` / `watch_done.py` / `watch.env` (copied from `watch.env.example`) into a stable folder, fill in key/topic;
+4. **Self-check**: `python watch_approve.py --doctor` — validates config placeholders, Pushcut key/device names/notification name, ntfy round-trip, then sends a real test notification;
+5. **Wire up**: `python watch_approve.py --print-claude-config` / `--print-codex-config` prints paste-ready snippets with the absolute paths already escaped; merge, restart the agent, test with a risky command.
+
+Details for each step below; if anything misbehaves, run `--doctor` first, then see Troubleshooting.
+
 ## What it does
 
-1. **⌚ Remote approval** — risky actions (`rm -rf`, `git push --force`, privilege escalation, sandbox escapes…) push a notification with **Allow / Deny** buttons to your watch; your tap flows back to the agent in seconds.
+1. **⌚ Remote approval** — risky actions (`rm -rf`, `git push --force`, privilege escalation, sandbox escapes…) push a notification with **✅ Allow / ❌ Deny / 🖥️ view in terminal** buttons to your watch; your tap flows back to the agent in seconds ("view in terminal" defers to the normal terminal prompt when you'd rather read the full command first).
 2. **🤔 Multiple-choice questions on your wrist** — when Claude pops a decision prompt in the terminal ("option A or option B?"), it goes to the watch too, with **Option A / Option B / 🖥️ answer in terminal** buttons; your tap becomes Claude's answer and it keeps working.
 3. **🔔 Done notifications** — every time the agent finishes a turn, your wrist buzzes "task complete".
 4. **🚦 Usage-limit alerts** — get notified the moment your subscription quota runs out (Claude) or is about to (Codex, ≥90% warning by default), with the reset time; turns killed by API errors alert you too.
@@ -111,30 +121,41 @@ cp agent-watch-approve/watch.env.example ~/watch-hooks/watch.env   # then fill i
 
 ### Step 2 — Wire up Claude Code
 
-Merge [`examples/claude/settings.example.json`](./examples/claude/settings.example.json) into
-`~/.claude/settings.json` (global) or your project's `.claude/settings.json`, fixing the absolute
-script paths. Restart Claude Code.
+**Lazy way**: `python watch_approve.py --print-claude-config` prints a snippet with the current
+absolute script paths already escaped (Windows backslashes included) — merge it into
+`~/.claude/settings.json` (global) or your project's `.claude/settings.json`. Or edit
+[`examples/claude/settings.example.json`](./examples/claude/settings.example.json) by hand.
+Restart Claude Code.
 
 Two hooks: `PreToolUse` (approval) + `Stop` (done notification), with `"matcher": "*"` for the
 autopilot setup described below.
 
 ### Step 3 — Wire up Codex
 
-Put [`examples/codex/hooks.example.json`](./examples/codex/hooks.example.json) at `~/.codex/hooks.json`,
-fixing the absolute script paths.
+**Lazy way**: `python watch_approve.py --print-codex-config` prints a ready snippet — save it as
+`~/.codex/hooks.json`. Or edit [`examples/codex/hooks.example.json`](./examples/codex/hooks.example.json) by hand.
 
 **Three Codex-specific gotchas (all learned the hard way):**
 
 1. **Approval hangs off the `PermissionRequest` event, not `PreToolUse`.** Codex fires it exactly when
    it would ask you for approval (escalation / sandbox escape / network…); the hook answers allow/deny,
-   and answering nothing falls back to the normal terminal prompt. (Codex's `PreToolUse` does *not*
-   intercept the newer unified shell calls and doesn't support `ask` — don't use it for approvals.)
+   and answering nothing falls back to the normal terminal prompt — exactly the semantics a remote
+   approval needs. (Current Codex also supports allow/deny on `PreToolUse`, which is fine for
+   logging/policy checks, but it doesn't correspond to "Codex wants to ask you" — and older builds
+   didn't intercept the unified shell channel there — so don't make it this project's approval path.)
 2. **Hooks must be reviewed & trusted before they run, and re-trusted after every edit** — otherwise
    they are **silently skipped** with no error. In the Codex TUI run **`/hooks`**, review and trust both entries.
 3. **`codex exec` (non-interactive) never fires `PermissionRequest`** (its approval policy is `never`).
    Test approvals in an interactive session; the `Stop` hook does fire under exec.
 
-### Step 4 — Smoke-test without the agent
+### Step 4 — Self-check, then smoke-test without the agent
+
+```bash
+# One-shot checkup: placeholders, Pushcut key/devices/notification, ntfy round-trip + a test push
+python ~/watch-hooks/watch_approve.py --doctor
+```
+
+macOS / Linux (bash/zsh):
 
 ```bash
 # Claude style (PreToolUse):
@@ -149,19 +170,36 @@ echo '{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"c
 python ~/watch-hooks/watch_done.py < /dev/null
 ```
 
+Windows (PowerShell) — use here-strings so quotes survive (keep non-ASCII out of the pipe;
+PowerShell 5.1 mangles its encoding, see Troubleshooting):
+
+```powershell
+@'
+{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}
+'@ | python C:\Users\you\watch-hooks\watch_approve.py
+
+@'
+{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"git push --force"}}
+'@ | python C:\Users\you\watch-hooks\watch_approve.py --agent codex
+
+'' | python C:\Users\you\watch-hooks\watch_done.py   # done notification
+```
+
 Tap **✅ Allow** on the watch: the first command prints `permissionDecision: "allow"`, the second prints
 `decision: {"behavior": "allow"}` — the script switches output format automatically per event.
 
 > ⚠️ With danger-only enabled (the recommended default), test with a **risky** command — a plain
 > `echo hello` won't notify by design.
 
-## Autopilot mode (recommended)
+## Autopilot mode (optional upgrade)
 
-The defaults in `watch.env.example` implement "**only danger interrupts me, everything else just runs**":
+`watch.env.example` ships in **safe mode**: danger goes to the watch, everything else falls back to
+the agent's own normal approval (`WATCH_DANGER_ONLY=1` + non-danger `ask`). To upgrade to
+"**only danger interrupts me, everything else just runs**", uncomment one line in the example:
 
 ```
 WATCH_DANGER_ONLY=1            # only danger-list matches go to the watch
-WATCH_NONDANGER_DECISION=allow # everything else is approved silently
+WATCH_NONDANGER_DECISION=allow # everything else is approved silently ← uncomment for autopilot
 ```
 
 Combined with Claude Code's `"matcher": "*"`, **every** tool call routes through the hook: non-risky
@@ -180,8 +218,11 @@ Extend with `WATCH_DANGER_EXTRA`, or replace wholesale with `WATCH_DANGER_REGEX`
 **The watch shows a human-readable verdict, not raw commands** — a category label plus the target's
 basename, e.g. `🗑️ delete folder: node_modules`, `⚠️ git force push: main`, `📝 edit files: app.py, readme.md`.
 
-**Anti-tamper:** set `WATCH_PROTECT_PATHS=watch-hooks` and any *write* to the scripts' folder is itself
-forced onto the watch (🛡️) — the agent can't quietly edit your gate away.
+**Anti-tamper:** the scripts' own folder is **protected by default** (`WATCH_PROTECT_SELF=1`,
+normalized absolute-path comparison): any *write* to `watch_approve.py` / `watch.env` is itself
+forced onto the watch (🛡️) — the agent can't quietly edit your gate away. Add more paths with
+`WATCH_PROTECT_PATHS` (substring match). Known edge: shell redirection (`echo x > script`)
+bypasses this rule, though the danger list still catches most destructive write commands.
 
 ## Usage-limit alerts (a must for subscription plans)
 
@@ -221,8 +262,8 @@ there. Now it reaches your watch too (title "🤔 Claude 在问你"):
 
 - Body = the question plus an `A. / B. / C.` option digest; buttons are kept short —
   **方案A / 方案B / …** (option codes; full text is in the body) plus **🖥️ answer in terminal**;
-- Tap an option → the choice is fed straight back to Claude, which continues with it (no
-  terminal prompt at all);
+- Tap an option → the answer goes back through the official `updatedInput.answers` channel
+  (a real answer, not a prompt nudge) and Claude continues with it — no terminal prompt at all;
 - Tap "answer in terminal" (you're at the desk anyway) or let it time out → the prompt renders
   in the terminal as usual, nothing is lost;
 - **Multi-question or multi-select prompts** don't fit on a watch face → you get a heads-up
@@ -273,7 +314,11 @@ Override with `PUSHCUT_IMAGE=<url>` (applies to both agents), or `none` to drop 
 | `WATCH_NONDANGER_DECISION` | `ask` | In danger-only mode, non-risky ops: `ask` / `allow` / `deny` |
 | `WATCH_DANGER_EXTRA` | — | Extra danger regexes (newline-separated) |
 | `WATCH_DANGER_REGEX` | — | Replace the built-in danger list entirely |
-| `WATCH_PROTECT_PATHS` | — | Comma-separated substrings; write-tool hits are forced onto the watch |
+| `WATCH_PROTECT_SELF` | `1` | Protect the scripts' own folder: writes to it are forced onto the watch; `0` = off |
+| `WATCH_PROTECT_PATHS` | — | Extra protection: comma-separated substrings; write-tool hits are forced onto the watch |
+| `WATCH_TERMINAL_BUTTON` | `1` | Third approval button "🖥️ view in terminal" (defers to the terminal prompt); `0` = ✅/❌ only |
+| `WATCH_SHOW_RAW` | `0` | `1` = append the raw command / full path on its own line |
+| `WATCH_RAW_MAX` | `160` | Truncation length for the raw detail line |
 | `WATCH_DESC_MAX` | `80` | Max body length (watch screens are small) |
 | `WATCH_UNIQUE_TOPIC` | `1` | Per-request reply topic (base topic + random suffix) so parallel windows never cross-talk; `0` = shared |
 | `WATCH_SHOW_CWD` | `1` | Append "📁 project folder" to notification bodies to tell windows apart; `0` = off |
@@ -297,7 +342,7 @@ Override with `PUSHCUT_IMAGE=<url>` (applies to both agents), or `none` to drop 
 |----------|---------|-------------|
 | `PUSHCUT_RETRIES` | approve `12` / done `8` | Retries for triggering Pushcut (flaky TLS through proxies) |
 | `PUSHCUT_TIMEOUT` | approve `3` / done `6` | Per-attempt timeout (s); shorter = fail fast onto a fresh retry |
-| `NTFY_BASE` | `https://ntfy.sh/` | Change when self-hosting ntfy |
+| `NTFY_BASE` | `https://ntfy.sh/` | Change when self-hosting ntfy. Note: the watch buttons are header-less GETs sent by Pushcut's cloud, so the topic must allow anonymous read/write |
 | `PUSHCUT_DYNAMIC_ACTIONS` | `1` | `1` = hook injects buttons (Pro); `0` = use app-configured actions |
 | `WATCH_DEBUG_DUMP` | `0` | `1` = dump each hook's raw stdin to `%TEMP%/watch_*_last_input_<agent>.json` |
 
@@ -317,7 +362,9 @@ Override with `PUSHCUT_IMAGE=<url>` (applies to both agents), or `none` to drop 
 
 | Symptom | Cause / fix |
 |---------|-------------|
+| **Anything's off / first run** | Run `python watch_approve.py --doctor` first: it checks most of this table automatically and sends a test notification |
 | Pushcut HTTP 404 | No notification named `PUSHCUT_NOTIF` in the cloud (create it; make sure the app synced) |
+| Pushcut HTTP 400 | Usually a `PUSHCUT_DEVICES` name that doesn't match your account's devices (`--doctor` lists the real names) |
 | Pushcut HTTP 401/403 | Wrong `PUSHCUT_KEY` |
 | Send succeeds but **no device** receives | Stale push token → **reopen the Pushcut app on the iPhone**. "Success" = cloud accepted, not device delivered |
 | Phone gets it, watch doesn't | Keep `PUSHCUT_TIME_SENSITIVE=1` + target the watch via `PUSHCUT_DEVICES`; check the watch app is installed and Time-Sensitive is allowed |
@@ -335,9 +382,13 @@ Every failure path returns "fall back to normal approval" — the agent never ha
 ## Security
 
 - Secrets are read from env vars / `watch.env` only; `.gitignore` excludes `*.env` — never commit real config.
-- On public ntfy.sh the topic name is the only guard on the return channel → long random value, or self-host with auth (`NTFY_BASE`).
+- On public ntfy.sh the topic name is the only guard on the return channel → long random value
+  (each approval additionally gets a random per-request suffix). Self-hosting via `NTFY_BASE` works,
+  but the watch buttons are header-less GETs from Pushcut's cloud and can't carry Authorization —
+  either allow anonymous read/write on the topic, or stay on public ntfy.sh + a long random topic.
 - `WATCH_NONDANGER_DECISION=allow` delegates non-risky approval to the danger regex — review it before enabling.
-- Consider `WATCH_PROTECT_PATHS` so the agent can't silently edit the hook scripts themselves.
+- The scripts' own folder is protected by default (`WATCH_PROTECT_SELF=1`): agent writes to it always
+  go to the watch. Add more paths with `WATCH_PROTECT_PATHS`.
 
 ## License
 

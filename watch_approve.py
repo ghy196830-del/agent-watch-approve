@@ -19,6 +19,11 @@ Claude Code / Codex CLI PreToolUse hook: 手表远程批准 (watch remote approv
     绝不让 hook 崩溃卡住 Claude Code。
   * 多窗口并行:每次审批用独立的回执 topic(基础 topic + 随机后缀),几个窗口
     同时等批准也不会串台;正文末尾带「📁 项目名」,一眼分清是谁在求批准。
+
+自带 CLI(不当 hook 用时):
+  * --doctor                逐项自检配置和链路(把 README 排错表自动跑一遍)
+  * --print-claude-config   打印可直接粘贴的 Claude Code hooks 配置(绝对路径已转义)
+  * --print-codex-config    打印可直接粘贴的 Codex hooks.json(同上)
 """
 
 import json
@@ -40,10 +45,16 @@ import urllib.request
 # 的 env 传给 hook(那只作用于 shell 工具,见 codex-rs/hooks/engine/command_runner.rs)。
 # 为了让脚本在任何宿主下都拿得到配置,这里读脚本同目录的 watch.env(KEY=VALUE 每行一条,
 # # 开头是注释),【只填补缺失的环境变量】——真实环境变量永远优先。路径可用 WATCH_ENV_FILE 覆盖。
+_ENV_FILE_PATH = ""    # 实际尝试读取的 watch.env 路径(--doctor 报告用)
+_ENV_FILE_LOADED = False
+
+
 def _load_env_file():
+    global _ENV_FILE_PATH, _ENV_FILE_LOADED
     path = os.environ.get("WATCH_ENV_FILE", "").strip() or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "watch.env"
     )
+    _ENV_FILE_PATH = path
     try:
         with open(path, "r", encoding="utf-8-sig") as f:
             for line in f:
@@ -54,6 +65,7 @@ def _load_env_file():
                 k, v = k.strip(), v.strip()
                 if k and k not in os.environ:
                     os.environ[k] = v
+        _ENV_FILE_LOADED = True
     except Exception:
         pass
 
@@ -187,6 +199,20 @@ try:
 except ValueError:
     DESC_MAX = 80
 
+# 审批通知的第三个按钮「🖥️ 终端查看」:点了返回 ask——Claude 退回终端原生弹窗、
+# Codex 弹它自己的审批。命令太复杂、想回电脑看全文再决定时用。
+# 设 WATCH_TERMINAL_BUTTON=0 只留 ✅/❌ 两个按钮。
+TERMINAL_BUTTON = os.environ.get("WATCH_TERMINAL_BUTTON", "1").strip() != "0"
+
+# 通知正文默认只有「人话标签 + 目标名」(手表屏幕小);设 WATCH_SHOW_RAW=1 在正文末尾
+# 附原始详情(Bash/PowerShell=原始命令,写类工具=完整路径),单独成行,
+# 截断到 WATCH_RAW_MAX 字符。
+SHOW_RAW = os.environ.get("WATCH_SHOW_RAW", "0").strip() == "1"
+try:
+    RAW_MAX = max(20, int(os.environ.get("WATCH_RAW_MAX", "160")))
+except ValueError:
+    RAW_MAX = 160
+
 # 触发 Pushcut 通知的重试次数。经实测国内机场到 api.pushcut.io 的 TLS 握手会偶发
 # SSLEOFError,重试几下基本就能成功(瞬时失败很快,不会拖很久)。
 try:
@@ -204,7 +230,10 @@ try:
 except ValueError:
     PUSHCUT_TIMEOUT = 3
 
-NTFY_BASE = "https://ntfy.sh/"
+# ntfy 服务地址,自建实例用 NTFY_BASE 覆盖(默认公共 ntfy.sh,尾斜杠可写可不写)。
+# 注意:手表按钮是 Pushcut 云端发的「无自定义 header 的 GET」,带不了 Authorization——
+# 自建实例必须允许该 topic 匿名读写,否则按钮发不进去;公共 ntfy.sh + 长随机 topic 最顺滑。
+NTFY_BASE = (os.environ.get("NTFY_BASE", "").strip() or "https://ntfy.sh/").rstrip("/") + "/"
 # 通知名做 URL 转义,避免名字里有空格/特殊字符时拼坏 URL。
 PUSHCUT_URL = "https://api.pushcut.io/v1/notifications/" + urllib.parse.quote(
     PUSHCUT_NOTIF, safe=""
@@ -298,15 +327,44 @@ PROTECT_PATHS = [
 # (否则每次读 hook 脚本都震你手表)。
 _WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
+# 在 WATCH_PROTECT_PATHS(用户手填子串)之外,**默认**再保护脚本自身:agent 改掉
+# watch_approve.py / watch.env 就能解除你的管控,所以写类工具动到本脚本所在目录,
+# 一律视同危险、强制上手表。用规范化绝对路径比较(Windows 大小写不敏感),不靠子串。
+# 设 WATCH_PROTECT_SELF=0 关闭。路径解析失败按「不命中」处理(fail-open),
+# 与全脚本 fail-safe 原则一致,绝不因此把 agent 卡死。
+# 已知边界:Bash 里 `echo x > watch_approve.py` 这类重定向不走写类工具,拦不到。
+PROTECT_SELF = os.environ.get("WATCH_PROTECT_SELF", "1").strip() != "0"
 
-def hits_protected_path(tool_name, tool_input):
-    """写类工具动到受保护路径 -> True(该走手表);其它一律 False。"""
-    if not PROTECT_PATHS or tool_name not in _WRITE_TOOLS:
+
+def _norm_abs(path, base=""):
+    """规范化成绝对路径(normcase:Windows 下统一小写+反斜杠);失败返回空串。
+    相对路径先按 base(hook 输入的 cwd)落地,没有 base 才用进程工作目录。"""
+    try:
+        p = str(path)
+        if not os.path.isabs(p) and base:
+            p = os.path.join(base, p)
+        return os.path.normcase(os.path.abspath(p))
+    except Exception:
+        return ""
+
+
+_SELF_DIR = _norm_abs(os.path.dirname(os.path.abspath(__file__))) if PROTECT_SELF else ""
+
+
+def is_protected_write(tool_name, tool_input, cwd=""):
+    """写类工具动到受保护路径(WATCH_PROTECT_PATHS 子串 / 脚本自身目录)-> True(该走手表)。"""
+    if tool_name not in _WRITE_TOOLS or not isinstance(tool_input, dict):
         return False
-    if not isinstance(tool_input, dict):
+    fp = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+    if not fp:
         return False
-    fp = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "").lower()
-    return bool(fp) and any(p in fp for p in PROTECT_PATHS)
+    if PROTECT_PATHS and any(p in fp.lower() for p in PROTECT_PATHS):
+        return True
+    if _SELF_DIR:
+        rp = _norm_abs(fp, cwd)
+        if rp and (rp == _SELF_DIR or rp.startswith(_SELF_DIR + os.sep)):
+            return True
+    return False
 
 
 # ---------- 会被 Claude Code 强制弹终端的路径:hook 拦不住,只能提醒 ----------
@@ -426,13 +484,15 @@ def cwd_label(data):
     return base or cwd
 
 
-def emit(decision, reason):
+def emit(decision, reason, updated_input=None):
     """向 stdout 输出 hook JSON 并 exit 0。decision ∈ allow | deny | ask。
 
     输出格式按事件区分:
       * Codex 的 PermissionRequest:用 decision.behavior 格式;其中「ask=什么都不输出」
         (Codex 收不到决定就走它自己的正常审批流程,语义上等同 Claude 的 ask)。
       * 其余(Claude 的 PreToolUse 等):permissionDecision 格式。
+    updated_input:非 None 时随 allow 一起输出 updatedInput(官方机制:在工具执行前
+    替换其参数;AskUserQuestion 靠它回填 answers,见 handle_question)。仅 PreToolUse 格式支持。
     """
     if HOOK_EVENT == "PermissionRequest":
         if decision == "ask":
@@ -444,13 +504,14 @@ def emit(decision, reason):
         )
         out = {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": beh}}
     else:
-        out = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": decision,
-                "permissionDecisionReason": reason,
-            }
+        hso = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
         }
+        if updated_input is not None:
+            hso["updatedInput"] = updated_input
+        out = {"hookSpecificOutput": hso}
     # 显式以 UTF-8 字节写出,避免 Windows 控制台 codepage(如 GBK/cp936)把
     # permissionDecisionReason 里的中文编错,导致 Claude Code 读到乱码。
     payload = json.dumps(out, ensure_ascii=False).encode("utf-8")
@@ -517,27 +578,39 @@ def describe(tool_name, tool_input):
             desc = (_CN_VERB.get(tool_name, "操作:") + cmd) if cmd else "运行命令"
         if len(desc) > DESC_MAX:
             desc = desc[: DESC_MAX - 1] + "…"
+        # WATCH_SHOW_RAW=1:人话之外再附原始命令(单独一行,独立的截断上限)。
+        if SHOW_RAW and cmd:
+            raw = cmd if len(cmd) <= RAW_MAX else cmd[: RAW_MAX - 1] + "…"
+            desc += "\n$ " + raw
         return desc
 
+    fp_raw = ""
     if tool_name in ("Write", "Edit", "MultiEdit"):
-        body = os.path.basename(str(ti.get("file_path", "")).rstrip("/\\"))
+        fp_raw = str(ti.get("file_path", ""))
+        body = os.path.basename(fp_raw.rstrip("/\\"))
     elif tool_name == "NotebookEdit":
-        body = os.path.basename(str(ti.get("notebook_path", "")).rstrip("/\\"))
+        fp_raw = str(ti.get("notebook_path", ""))
+        body = os.path.basename(fp_raw.rstrip("/\\"))
     else:
         try:
             body = json.dumps(ti, ensure_ascii=False)
         except Exception:
             body = str(ti)
     body = " ".join(body.split())  # 压平空白/换行成一行
-    # 受保护路径的写操作:用 🛡️ 标签点明「这是在改 hook 脚本」,而不是普通「编辑文件」。
-    fp_full = str(ti.get("file_path") or ti.get("notebook_path") or "").lower()
-    if PROTECT_PATHS and tool_name in _WRITE_TOOLS and fp_full and any(p in fp_full for p in PROTECT_PATHS):
+    # 受保护路径(含脚本自身目录)的写操作:用 🛡️ 点明「这是在改 hook 脚本」。
+    if is_protected_write(tool_name, ti):
         prefix = "🛡️ 改 hook 脚本:"
     else:
         prefix = _CN_VERB.get(tool_name, "操作:")
     desc = (prefix + body) if body else prefix.rstrip(":")
     if len(desc) > DESC_MAX:
         desc = desc[: DESC_MAX - 1] + "…"
+    # WATCH_SHOW_RAW=1:basename 之外再附完整路径(单独一行)。
+    if SHOW_RAW and fp_raw:
+        raw = " ".join(fp_raw.split())
+        if len(raw) > RAW_MAX:
+            raw = raw[: RAW_MAX - 1] + "…"
+        desc += "\n" + raw
     return desc
 
 
@@ -553,8 +626,8 @@ def make_reply_topic():
 
 
 def build_actions(reply_topic):
-    """动态生成 Allow/Deny 两个按钮:用「后台 web 请求」GET 方式 publish 到 ntfy
-    的 reply_topic(本次审批专属 topic,见 make_reply_topic)。
+    """动态生成审批按钮:✅ 允许 / ❌ 拒绝(+ 可选 🖥️ 终端查看),用「后台 web 请求」
+    GET 方式 publish 到 ntfy 的 reply_topic(本次审批专属 topic,见 make_reply_topic)。
 
     关键:必须用 urlBackgroundOptions(后台 web 请求),不能用普通 url(=打开链接/打开
     app)——watchOS 不支持「打开 app / 跑快捷指令」类动作,只支持后台 web 请求。
@@ -564,10 +637,16 @@ def build_actions(reply_topic):
     if not DYNAMIC_ACTIONS or not reply_topic:
         return None
     base = NTFY_BASE + urllib.parse.quote(reply_topic, safe="") + "/publish?message="
-    return [
+    acts = [
         {"name": "✅ 允许", "url": base + "allow", "urlBackgroundOptions": {"httpMethod": "GET"}},
         {"name": "❌ 拒绝", "url": base + "deny", "urlBackgroundOptions": {"httpMethod": "GET"}},
     ]
+    if TERMINAL_BUTTON:
+        # 第三个按钮:既不放行也不拒绝,退回终端审批(Claude=ask,Codex=原生弹窗)。
+        acts.append(
+            {"name": "🖥️ 终端查看", "url": base + "term", "urlBackgroundOptions": {"httpMethod": "GET"}}
+        )
+    return acts
 
 
 def parse_question(tool_input):
@@ -575,7 +654,10 @@ def parse_question(tool_input):
 
     可处理 = 恰好 1 个问题、非 multiSelect、2~4 个选项(工具本身上限就是 4)。
     多问题 / 多选题一条通知放不下(一块表盘塞不进两道题),交回终端。
-    返回 {"question": 问题文本, "labels": [各选项 label 原文,未截断]}。
+    返回 {"question": 展示用问题文本, "question_raw": 问题原文,
+          "labels": [展示用 label(压平空白)], "labels_raw": [label 原文]}。
+    *_raw 用于 answers 回填(updatedInput 里的 key/value 必须和工具输入原文一致),
+    展示字段只给通知正文用。
     """
     if not isinstance(tool_input, dict):
         return None
@@ -588,12 +670,15 @@ def parse_question(tool_input):
     opts = q.get("options")
     if not isinstance(opts, list) or not 2 <= len(opts) <= len(_OPT_LETTERS):
         return None
-    labels = []
+    labels, labels_raw = [], []
     for i, o in enumerate(opts):
-        lab = " ".join(str((o if isinstance(o, dict) else {}).get("label") or "").split())
+        raw = str((o if isinstance(o, dict) else {}).get("label") or "")
+        lab = " ".join(raw.split())
         labels.append(lab or ("选项%d" % (i + 1)))
-    text = " ".join(str(q.get("question") or "").split()) or "(问题为空)"
-    return {"question": text, "labels": labels}
+        labels_raw.append(raw or ("选项%d" % (i + 1)))
+    raw_q = str(q.get("question") or "")
+    text = " ".join(raw_q.split()) or "(问题为空)"
+    return {"question": text, "question_raw": raw_q, "labels": labels, "labels_raw": labels_raw}
 
 
 def question_body(q):
@@ -693,14 +778,20 @@ def send_pushcut(opener, title, text, with_actions=True, retries=None, reply_top
 def wait_for_decision(opener, since_ts, deadline, topic=None, tokens=None):
     """从 ntfy stream 读回执。到 deadline 没读到返回 None。
 
-    默认(tokens=None)认审批语义:读到 allow/deny(及同义词)返回 'allow'/'deny'。
+    默认(tokens=None)认审批语义:读到 allow/deny(及同义词)返回 'allow'/'deny',
+    读到 term(「🖥️ 终端查看」按钮)返回 'term'。
     tokens 非空(选择题)时改认指定 token 集(如 {"opta","optb","term"},全小写),
     读到集合内的消息原样返回该 token,其余内容忽略。
     topic:本次审批的回执 topic(缺省用基础 topic,兼容旧行为)。
     用 since=since_ts(发通知前记下的 t0)防竞态:即使秒点、回执比订阅先到,
     重连/订阅时 ntfy 会把 t0 之后的消息一并回放,不会漏。
     """
-    url = NTFY_BASE + (topic or NTFY_TOPIC) + "/json?since=" + str(since_ts)
+    url = (
+        NTFY_BASE
+        + urllib.parse.quote(topic or NTFY_TOPIC, safe="")
+        + "/json?since="
+        + str(since_ts)
+    )
     while time.monotonic() < deadline:
         try:
             resp = opener.open(url, timeout=STREAM_READ_TIMEOUT)
@@ -735,6 +826,8 @@ def wait_for_decision(opener, since_ts, deadline, topic=None, tokens=None):
                     return "allow"
                 if msg in ("deny", "block", "no"):
                     return "deny"
+                if msg == "term":
+                    return "term"  # 「🖥️ 终端查看」:退回终端审批
                 # 其它内容忽略,继续等
         finally:
             try:
@@ -758,12 +851,23 @@ def _dump_topic(reply_topic):
             pass
 
 
+def answered_input(tool_input, q, i):
+    """官方机制(hooks 文档):AskUserQuestion 被 PreToolUse hook 拦下后,返回
+    allow + updatedInput——原样保留 questions,外加 answers={问题原文: 所选 label 原文},
+    Claude Code 即视为「问题已被回答」:终端不再弹选项框,直接按该答案继续。"""
+    ui = dict(tool_input) if isinstance(tool_input, dict) else {}
+    ui["answers"] = {q["question_raw"]: q["labels_raw"][i]}
+    return ui
+
+
 def handle_question(data, tool_input):
     """AskUserQuestion(终端多选决策框)的手表分支。不返回,内部必 emit。
 
-    点「方案X」-> deny + 理由把所选选项回传给 Claude:终端不再弹框,直接按该选项继续。
-    点「在终端查看」/ 超时 / 推送失败 / 配置缺失 / 题型复杂(多问题、多选)-> allow 放行,
-    题目照常在终端弹出 —— 对这个工具 allow 永远无害,它只是让终端选项框正常出现。
+    点「方案X」-> allow + updatedInput 回填 answers(见 answered_input):终端不再弹框,
+    Claude 直接按该选项继续。
+    点「在终端查看」/ 超时 / 推送失败 / 配置缺失 / 题型复杂(多问题、多选)-> allow 放行
+    (不带 updatedInput),题目照常在终端弹出 —— 对这个工具 allow 永远无害,
+    它只是让终端选项框正常出现。
     """
     if not PUSHCUT_KEY or not NTFY_TOPIC:
         emit("allow", "watch-approve: 缺少 PUSHCUT_KEY 或 NTFY_TOPIC,选择题改在终端弹出。")
@@ -815,10 +919,10 @@ def handle_question(data, tool_input):
     if choice and choice.startswith("opt"):
         i = _OPT_LETTERS.lower().index(choice[3])
         emit(
-            "deny",
-            "用户已在手表上回答了这个问题:选择 方案%s「%s」。这就是用户的正式答复,"
-            "请直接按该选项继续执行,不要再用 AskUserQuestion 重复询问这个问题。"
+            "allow",
+            "watch-approve: 用户已在手表上选择 方案%s「%s」,答案已通过 updatedInput 回填。"
             % (_OPT_LETTERS[i], q["labels"][i]),
+            updated_input=answered_input(tool_input, q, i),
         )
     emit(
         "allow",
@@ -909,7 +1013,9 @@ def main():
                 or tool_input.get("notebook_path")
                 or ""
             )
-        if not is_dangerous(match_text) and not hits_protected_path(tool_name, tool_input):
+        if not is_dangerous(match_text) and not is_protected_write(
+            tool_name, tool_input, str(data.get("cwd") or "")
+        ):
             if NONDANGER_DECISION == "allow":
                 emit("allow", "watch-approve: 非危险操作,自动放行(未打扰手表)。")
             elif NONDANGER_DECISION == "deny":
@@ -954,6 +1060,8 @@ def main():
         emit("allow", "watch-approve: 已在手表上批准。")
     elif decision == "deny":
         emit("deny", "watch-approve: 已在手表上拒绝。")
+    elif decision == "term":
+        emit("ask", "watch-approve: 已在手表上选择「终端查看」,退回终端审批。")
     else:
         emit(
             TIMEOUT_DECISION,
@@ -962,7 +1070,251 @@ def main():
         )
 
 
+# ---------- CLI:--doctor 自检 / --print-*-config 配置生成(人用的,不是 hook 路径) ----------
+def _say(msg, err=False):
+    """诊断/配置输出(给人看的文本,不是 hook JSON)。Windows 控制台可能是 GBK,
+    编不出去的字符替换掉,绝不因打印崩溃。"""
+    stream = sys.stderr if err else sys.stdout
+    try:
+        stream.write(msg + "\n")
+    except Exception:
+        enc = getattr(stream, "encoding", None) or "utf-8"
+        try:
+            stream.write(msg.encode(enc, "replace").decode(enc, "replace") + "\n")
+        except Exception:
+            pass
+    try:
+        stream.flush()
+    except Exception:
+        pass
+
+
+def _mask_secret(s):
+    return ("****" + s[-4:]) if len(s) > 4 else "****"
+
+
+def _doctor_get_json(opener, url, timeout=10):
+    req = urllib.request.Request(url, headers={"API-Key": PUSHCUT_KEY})
+    with opener.open(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def run_doctor():
+    """`python watch_approve.py --doctor`:把 README 排错表自动跑一遍。
+
+    逐项检查 Python / 配置 / Pushcut(key、设备名、通知名)/ ntfy 收发回环,
+    最后真发一条测试通知。只读自测,不写任何配置。返回退出码:0=全过,1=有失败项。
+    """
+    fails = [0]
+
+    def chk(level, text):
+        if level == "FAIL":
+            fails[0] += 1
+        _say("[%s] %s" % (level, text))
+
+    _say("== watch-approve 自检 (agent=%s) ==" % AGENT)
+
+    v = sys.version_info
+    chk("OK" if v >= (3, 6) else "FAIL", "Python %d.%d.%d" % (v[0], v[1], v[2]))
+
+    if _ENV_FILE_LOADED:
+        chk("OK", "配置文件已读取:%s" % _ENV_FILE_PATH)
+    else:
+        chk("WARN", "未读到 watch.env(找过:%s)——只用进程环境变量" % _ENV_FILE_PATH)
+
+    if not PUSHCUT_KEY:
+        chk("FAIL", "PUSHCUT_KEY 缺失(Pushcut app -> Account -> API 获取)")
+    elif "REPLACE_WITH" in PUSHCUT_KEY.upper():
+        chk("FAIL", "PUSHCUT_KEY 还是示例占位符,没填真实 key")
+    else:
+        chk("OK", "PUSHCUT_KEY 已配置(%s)" % _mask_secret(PUSHCUT_KEY))
+
+    if not NTFY_TOPIC:
+        chk("FAIL", "NTFY_TOPIC 缺失(回执通道;topic 名就是密码,取长随机串)")
+    elif "REPLACE_WITH" in NTFY_TOPIC.upper():
+        chk("FAIL", "NTFY_TOPIC 还是示例占位符,没填真实 topic")
+    elif len(NTFY_TOPIC) < 12:
+        chk("WARN", "NTFY_TOPIC 只有 %d 字符:topic 名就是密码,建议 16+ 位随机串" % len(NTFY_TOPIC))
+    else:
+        chk("OK", "NTFY_TOPIC 已配置(%s)" % _mask_secret(NTFY_TOPIC))
+
+    chk("OK", "PUSHCUT_NOTIF=%s" % PUSHCUT_NOTIF)
+    if PROXY:
+        chk("OK", "代理:%s" % PROXY)
+    else:
+        chk("WARN", "未配置代理,直连(国内连不上 Pushcut/ntfy 时配 HTTPS_PROXY)")
+
+    if APPROVE_WAIT >= 300:
+        chk("WARN", "APPROVE_WAIT=%ds >= hook timeout(示例配置 300s):宿主会先掐掉 hook,请调小" % APPROVE_WAIT)
+    else:
+        chk("OK", "APPROVE_WAIT=%ds(小于示例 hook timeout 300s)" % APPROVE_WAIT)
+
+    chk("OK", "模式:danger_only=%s nondanger=%s 动态按钮=%s 独立回执topic=%s 终端查看按钮=%s"
+        % (DANGER_ONLY, NONDANGER_DECISION, DYNAMIC_ACTIONS, UNIQUE_TOPIC, TERMINAL_BUTTON))
+    if _SELF_DIR:
+        chk("OK", "脚本自身目录已受保护:%s(WATCH_PROTECT_SELF=0 可关)" % _SELF_DIR)
+    else:
+        chk("WARN", "未保护脚本自身目录(WATCH_PROTECT_SELF=0):agent 可以改掉这套 hook")
+    if PROTECT_PATHS:
+        chk("OK", "额外受保护路径子串:%s" % ",".join(PROTECT_PATHS))
+
+    if not PUSHCUT_KEY or not NTFY_TOPIC:
+        _say("-- 关键配置缺失,跳过网络检查 --")
+        _say("== 结果:%d 项失败,按上面 [FAIL] 逐条补齐 ==" % fails[0])
+        return 1
+
+    opener = make_opener()
+
+    # Pushcut:key 是否有效 + 账号真实设备名(PUSHCUT_DEVICES 名字不对,发通知会 400)
+    device_names = []
+    try:
+        devs = _doctor_get_json(opener, "https://api.pushcut.io/v1/devices")
+        for d in devs if isinstance(devs, list) else []:
+            n = (d.get("id") or d.get("name")) if isinstance(d, dict) else None
+            device_names.append(str(n if n else d))
+        chk("OK", "Pushcut API 连通,账号设备:%s" % (", ".join(device_names) or "(无)"))
+    except urllib.error.HTTPError as e:
+        chk("FAIL", "Pushcut API 返回 HTTP %d%s"
+            % (e.code, "(PUSHCUT_KEY 无效?)" if e.code in (401, 403) else ""))
+    except Exception as e:
+        chk("FAIL", "连不上 Pushcut API(%s):检查网络 / HTTPS_PROXY" % type(e).__name__)
+
+    if PUSHCUT_DEVICES and device_names:
+        lowered = [n.lower() for n in device_names]
+        unknown = [d for d in PUSHCUT_DEVICES if d.lower() not in lowered]
+        if unknown:
+            chk("FAIL", "PUSHCUT_DEVICES 里这些设备名账号里没有:%s(发通知会 400;改成上面列出的真名)"
+                % ",".join(unknown))
+        else:
+            chk("OK", "PUSHCUT_DEVICES=%s 全部匹配" % ",".join(PUSHCUT_DEVICES))
+
+    # Pushcut:云端有没有名为 PUSHCUT_NOTIF 的通知(没有,发通知会 404)
+    try:
+        notifs = _doctor_get_json(opener, "https://api.pushcut.io/v1/notifications")
+        names = []
+        for nobj in notifs if isinstance(notifs, list) else []:
+            if isinstance(nobj, dict):
+                names.extend(str(x) for x in (nobj.get("id"), nobj.get("title")) if x)
+        if PUSHCUT_NOTIF in names:
+            chk("OK", "Pushcut 云端存在通知「%s」" % PUSHCUT_NOTIF)
+        elif names:
+            chk("FAIL", "Pushcut 云端没有名为「%s」的通知(现有:%s)。去 app 里建一条并等同步"
+                % (PUSHCUT_NOTIF, ", ".join(sorted(set(names)))))
+        else:
+            chk("WARN", "通知列表为空或格式未知,跳过此项(若发通知 404 = 名字不对)")
+    except Exception as e:
+        chk("WARN", "列举 Pushcut 通知失败(%s),跳过此项" % type(e).__name__)
+
+    # ntfy:publish -> poll 回环(doctor 专属临时 topic,不打扰真实通道)
+    topic = NTFY_TOPIC + "-doctor-" + os.urandom(4).hex()
+    t0 = int(time.time()) - 2
+    pub_ok = False
+    try:
+        with opener.open(
+            NTFY_BASE + urllib.parse.quote(topic, safe="") + "/publish?message=ping", timeout=10
+        ) as r:
+            r.read()
+        pub_ok = True
+    except Exception as e:
+        chk("FAIL", "ntfy publish 失败(%s @ %s):检查网络 / NTFY_BASE / 代理"
+            % (type(e).__name__, NTFY_BASE))
+    if pub_ok:
+        got = False
+        for _ in range(3):
+            try:
+                with opener.open(
+                    NTFY_BASE + urllib.parse.quote(topic, safe="") + "/json?poll=1&since=" + str(t0),
+                    timeout=10,
+                ) as r:
+                    for ln in r.read().decode("utf-8", "replace").splitlines():
+                        try:
+                            o = json.loads(ln)
+                        except Exception:
+                            continue
+                        if o.get("event") == "message" and (o.get("message") or "").strip() == "ping":
+                            got = True
+                            break
+            except Exception:
+                pass
+            if got:
+                break
+            time.sleep(1)
+        if got:
+            chk("OK", "ntfy 收发回环正常(%s)" % NTFY_BASE)
+        else:
+            chk("FAIL", "ntfy publish 成功但订阅读不回(%s):服务端不通或被墙" % NTFY_BASE)
+
+    # 压轴:真发一条测试通知(无按钮)。注意 API「成功」!= 设备收到(token 失效照样返回成功)。
+    try:
+        send_pushcut(opener, "🩺 watch-approve 自检", "看到这条 = Pushcut→设备链路 OK",
+                     with_actions=False, retries=3)
+        chk("OK", "测试通知已发出 -> 看下 iPhone/手表。没收到 = 推送 token 失效,重开 iPhone 上的 Pushcut app")
+    except urllib.error.HTTPError as e:
+        extra = ""
+        if e.code == 404:
+            extra = "(云端没有通知「%s」)" % PUSHCUT_NOTIF
+        elif e.code in (401, 403):
+            extra = "(PUSHCUT_KEY 无效)"
+        elif e.code == 400:
+            extra = "(请求被拒,常见原因:PUSHCUT_DEVICES 设备名不对)"
+        chk("FAIL", "发测试通知失败:HTTP %d%s" % (e.code, extra))
+    except Exception as e:
+        chk("FAIL", "发测试通知失败(%s):网络/代理问题" % type(e).__name__)
+
+    if fails[0] == 0:
+        _say("== 结果:全部通过 ==")
+        return 0
+    _say("== 结果:%d 项失败,按上面 [FAIL] 逐条排查 ==" % fails[0])
+    return 1
+
+
+def print_config(argv):
+    """`--print-claude-config` / `--print-codex-config`(或 `--print-config` 两份都给):
+    打印可直接粘贴的 hooks 配置片段。JSON 走 stdout(可重定向),提示走 stderr。
+    脚本路径取当前文件所在目录的绝对路径,由 json.dumps 转义——Windows 反斜杠 /
+    引号这些最容易抄错的地方都不用手改。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def cmd(script, agent=None):
+        c = 'python "%s"' % os.path.join(here, script)
+        return c + ((" --agent " + agent) if agent else "")
+
+    both = "--print-config" in argv
+    if both or "--print-claude-config" in argv:
+        cfg = {
+            "hooks": {
+                "PreToolUse": [{"matcher": "*", "hooks": [
+                    {"type": "command", "command": cmd("watch_approve.py"), "timeout": 300}]}],
+                "Stop": [{"hooks": [
+                    {"type": "command", "command": cmd("watch_done.py"), "timeout": 60}]}],
+                "StopFailure": [{"hooks": [
+                    {"type": "command", "command": cmd("watch_done.py"), "timeout": 60}]}],
+            }
+        }
+        _say("# 合并进 ~/.claude/settings.json(或项目 .claude/settings.json),重启 Claude Code;"
+             "密钥放脚本同目录的 watch.env:", err=True)
+        _say(json.dumps(cfg, ensure_ascii=False, indent=2))
+    if both or "--print-codex-config" in argv:
+        cfg = {
+            "hooks": {
+                "PermissionRequest": [{"matcher": "*", "hooks": [
+                    {"type": "command", "command": cmd("watch_approve.py", "codex"),
+                     "statusMessage": "Waiting for watch approval", "timeout": 300}]}],
+                "Stop": [{"hooks": [
+                    {"type": "command", "command": cmd("watch_done.py", "codex"), "timeout": 60}]}],
+            }
+        }
+        _say("# 存为 ~/.codex/hooks.json;改完在 Codex TUI 里跑 /hooks 重新信任这两条 hook:", err=True)
+        _say(json.dumps(cfg, ensure_ascii=False, indent=2))
+    return 0
+
+
 if __name__ == "__main__":
+    _argv = sys.argv[1:]
+    if "--doctor" in _argv:
+        sys.exit(run_doctor())
+    if any(a in _argv for a in ("--print-config", "--print-claude-config", "--print-codex-config")):
+        sys.exit(print_config(_argv))
     try:
         main()
     except SystemExit:
