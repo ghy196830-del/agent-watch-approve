@@ -380,10 +380,11 @@ def main():
 
     title, text, sound = build_notification(data)
     # 多窗口并行:正文末尾带「📁 项目文件夹名」,分清是哪个窗口完成了任务。
+    # \u00a0 = 不换行空格:防手表窄屏把 📁 和名字折成两行。
     if SHOW_CWD:
         folder = cwd_label(data)
         if folder:
-            text = (text + "\n📁 " + folder) if text else "📁 " + folder
+            text = (text + "\n📁\u00a0" + folder) if text else "📁\u00a0" + folder
     send_pushcut(make_opener(), title, text, sound)
     # 不输出任何 JSON、正常 exit 0 -> agent 正常结束,不会触发 Stop 循环。
 

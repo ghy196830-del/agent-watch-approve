@@ -874,7 +874,8 @@ def handle_question(data, tool_input):
 
     q = parse_question(tool_input)
     folder = cwd_label(data) if SHOW_CWD else ""
-    suffix = ("\n📁 " + folder) if folder else ""
+    # \u00a0 = 不换行空格：手表屏窄，📁 后接普通空格会被折成「emoji 单独一行」。
+    suffix = ("\n📁\u00a0" + folder) if folder else ""
     opener = make_opener()
 
     # 复杂题型(多问题 / 多选)或没开动态按钮:手表只提醒一声,选择回终端做。
@@ -985,7 +986,7 @@ def main():
     if SHOW_CWD:
         _folder = cwd_label(data)
         if _folder:
-            desc = (desc + "\n📁 " + _folder) if desc else "📁 " + _folder
+            desc = (desc + "\n📁\u00a0" + _folder) if desc else "📁\u00a0" + _folder
 
     # 0) 会被 Claude Code 强制弹终端的操作(改 .claude/ 里的 settings 等):它的终端确认
     #    hook 压不住(issue #41615),所以这里**不做手表审批、不等回执**,只给手表/手机推一条
