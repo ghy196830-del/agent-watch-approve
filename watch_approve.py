@@ -420,7 +420,8 @@ TERMINAL_FORCED_PATHS = [
         "WATCH_TERMINAL_FORCED_PATHS",
         ".claude\\settings.json,.claude/settings.json,"
         ".claude\\settings.local.json,.claude/settings.local.json,"
-        ".claude\\hooks,.claude/hooks",
+        ".claude\\hooks,.claude/hooks,"
+        ".claude\\skills,.claude/skills",
     ).split(",")
     if p.strip()
 ]
